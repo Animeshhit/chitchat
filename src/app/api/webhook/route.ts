@@ -26,9 +26,9 @@ export async function POST(req: NextRequest) {
 
   const wh = new Webhook(WH_SECRET);
 
-  let evt: any;
+  let evt: { type: string; data: any };
   try {
-    evt = wh.verify(payload, svixHeaders);
+    evt = wh.verify(payload, svixHeaders) as { type: string; data: any };
   } catch (err) {
     console.error("Webhook verification failed:", err);
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
