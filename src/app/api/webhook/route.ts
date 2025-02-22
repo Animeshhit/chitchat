@@ -1,44 +1,60 @@
 import { NextRequest, NextResponse } from "next/server";
 import dbConnect from "@/lib/db"; // Database connection
-import { headers } from "next/headers";
-import { verifyClerkWebhook } from "@/lib/clerk"; // Clerk signature verification
 import User from "@/models/UserModel";
+import { Webhook } from "svix";
+import { headers } from "next/headers";
 
 export const config = {
   runtime: "edge", // Ensures it runs as an Edge function
 };
 
 export async function POST(req: NextRequest) {
+  const WH_SECRET = process.env.CLERK_WEBHOOK_SECRET || "";
+
+  if (!WH_SECRET) {
+    console.error("Webhook secret is not configured.");
+    return NextResponse.json({ error: "Configuration error" }, { status: 500 });
+  }
+
+  const payload = await req.text(); // Get raw body
+  const headerList = headers();
+  const svixHeaders = {
+    "svix-id": (await headerList).get("svix-id") || "",
+    "svix-timestamp": (await headerList).get("svix-timestamp") || "",
+    "svix-signature": (await headerList).get("svix-signature") || "",
+  };
+
+  const wh = new Webhook(WH_SECRET);
+
+  let evt: any;
   try {
-    const rawBody = await req.text(); // Read raw request body
-    const headerList = headers(); // Get request headers
-    const signature = (await headerList).get("clerk-signature");
+    evt = wh.verify(payload, svixHeaders);
+  } catch (err) {
+    console.error("Webhook verification failed:", err);
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
-    if (!signature || !verifyClerkWebhook(rawBody, signature)) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  const eventType = evt.type;
 
-    const data = JSON.parse(rawBody);
+  if (eventType === "user.created") {
+    const { id, email_addresses, first_name, last_name, image_url } = evt.data;
 
-    dbConnect();
-
-    if (data.type === "user.created") {
-      const { email_addresses, first_name, last_name, image_url } = data.data;
+    try {
+      await dbConnect();
 
       const user = new User({
+        clerkId: id,
         imageUrl: image_url,
         name: `${first_name} ${last_name}`,
         email: email_addresses[0]?.email_address,
       });
-      await user.save();
-    }
 
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error("Error handling webhook:", error);
-    return NextResponse.json(
-      { error: "Internal Server Error" },
-      { status: 500 }
-    );
+      await user.save();
+    } catch (dbError) {
+      console.error("Database error:", dbError);
+      return NextResponse.json({ error: "Database error" }, { status: 500 });
+    }
   }
+
+  return NextResponse.json({ success: true });
 }
